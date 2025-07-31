@@ -21,7 +21,7 @@ phases:
     commands:
       - echo Build completed on `date`
       - docker push $IMAGE_URI
-      - printf '[{"name":"canary-demo","imageUri":"%s"}]' $IMAGE_URI > imagedefinitions.json
+      - printf '[{"name":"'$IMAGE_DEFINATION_NAME'","imageUri":"%s"}]' $IMAGE_URI > imagedefinitions.json
 
 artifacts:
   files:
