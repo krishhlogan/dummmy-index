@@ -17,18 +17,10 @@ phases:
       - echo "🔍 Reading commit message"
       - COMMIT_MSG=$(git log -1 --pretty=%B)
       - echo "$COMMIT_MSG"
-
-      # ---------------------------
-      # Defaults (SAFE)
-      # ---------------------------
       - export DEPLOY_ACTION="NONE"
       - export CANARY_PERCENT=0
       - export CANARY_DURATION_MINUTES=0
       - export SKIP_BUILD="false"
-
-      # ---------------------------
-      # Parse deployment intent
-      # ---------------------------
       - |
         if [[ "$COMMIT_MSG" =~ skip-build ]]; then
           export SKIP_BUILD="true"
@@ -58,10 +50,6 @@ phases:
       - echo "🚦 Decision"
       - echo "DEPLOY_ACTION=$DEPLOY_ACTION"
       - echo "SKIP_BUILD=$SKIP_BUILD"
-
-      # ---------------------------
-      # Safety checks
-      # ---------------------------
       - |
         if [ "$DEPLOY_ACTION" = "CANARY" ]; then
           if [ "$CANARY_PERCENT" -le 0 ] || [ "$CANARY_PERCENT" -ge 100 ]; then
@@ -73,10 +61,6 @@ phases:
             exit 1
           fi
         fi
-
-      # ---------------------------
-      # Resolve image tag
-      # ---------------------------
       - |
         if [ "$SKIP_BUILD" = "true" ]; then
           echo "⏭️ Skip build requested"
