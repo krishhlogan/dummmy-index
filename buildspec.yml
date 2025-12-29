@@ -3,25 +3,129 @@ version: 0.2
 env:
   variables:
     IMAGE_REPO_NAME: canary-demo
-    IMAGE_TAG: v2
+    LAST_IMAGE_PARAM: /canary-demo/last-successful-image-tag
+  exported-variables:
+    - DEPLOY_ACTION
+    - CANARY_PERCENT
+    - CANARY_DURATION_MINUTES
+    - IMAGE_TAG
+    - SKIP_BUILD
 
 phases:
   pre_build:
     commands:
-      - echo Logging in to Amazon ECR...
-      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
-      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
-      - IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+      - echo "🔍 Reading commit message"
+      - COMMIT_MSG=$(git log -1 --pretty=%B)
+      - echo "$COMMIT_MSG"
+
+      # ---------------------------
+      # Defaults (SAFE)
+      # ---------------------------
+      - export DEPLOY_ACTION="NONE"
+      - export CANARY_PERCENT=0
+      - export CANARY_DURATION_MINUTES=0
+      - export SKIP_BUILD="false"
+
+      # ---------------------------
+      # Parse deployment intent
+      # ---------------------------
+      - |
+        if [[ "$COMMIT_MSG" =~ skip-build ]]; then
+          export SKIP_BUILD="true"
+        fi
+
+        if [[ "$COMMIT_MSG" =~ ^deploy:canary ]]; then
+          export DEPLOY_ACTION="CANARY"
+          export CANARY_PERCENT=$(echo "$COMMIT_MSG" | grep -oE '[0-9]+' | sed -n '1p')
+          RAW_DURATION=$(echo "$COMMIT_MSG" | grep -oE '[0-9]+[mh]' | head -n 1)
+
+          if [[ "$RAW_DURATION" =~ m$ ]]; then
+            export CANARY_DURATION_MINUTES=${RAW_DURATION%m}
+          elif [[ "$RAW_DURATION" =~ h$ ]]; then
+            export CANARY_DURATION_MINUTES=$((${RAW_DURATION%h} * 60))
+          fi
+
+        elif [[ "$COMMIT_MSG" =~ ^deploy:stable ]]; then
+          export DEPLOY_ACTION="STABLE"
+
+        elif [[ "$COMMIT_MSG" =~ ^deploy:promote ]]; then
+          export DEPLOY_ACTION="PROMOTE"
+
+        elif [[ "$COMMIT_MSG" =~ ^deploy:rollback ]]; then
+          export DEPLOY_ACTION="ROLLBACK"
+        fi
+
+      - echo "🚦 Decision"
+      - echo "DEPLOY_ACTION=$DEPLOY_ACTION"
+      - echo "SKIP_BUILD=$SKIP_BUILD"
+
+      # ---------------------------
+      # Safety checks
+      # ---------------------------
+      - |
+        if [ "$DEPLOY_ACTION" = "CANARY" ]; then
+          if [ "$CANARY_PERCENT" -le 0 ] || [ "$CANARY_PERCENT" -ge 100 ]; then
+            echo "❌ Invalid canary percentage"
+            exit 1
+          fi
+          if [ "$CANARY_DURATION_MINUTES" -le 0 ]; then
+            echo "❌ Canary duration missing or invalid"
+            exit 1
+          fi
+        fi
+
+      # ---------------------------
+      # Resolve image tag
+      # ---------------------------
+      - |
+        if [ "$SKIP_BUILD" = "true" ]; then
+          echo "⏭️ Skip build requested"
+          export IMAGE_TAG=$(aws ssm get-parameter \
+            --name "$LAST_IMAGE_PARAM" \
+            --query Parameter.Value \
+            --output text)
+        else
+          export IMAGE_TAG=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c1-7)
+        fi
+
+      - export IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+      - echo "📦 Using image: $IMAGE_URI"
+
+      - |
+        if [ "$SKIP_BUILD" != "true" ]; then
+          echo "🔐 Logging in to Amazon ECR..."
+          aws ecr get-login-password --region $AWS_REGION | \
+            docker login --username AWS --password-stdin \
+            $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+        fi
+
   build:
     commands:
-      - echo Build started on `date`
-      - docker build -t $IMAGE_REPO_NAME .
-      - docker tag $IMAGE_REPO_NAME:latest $IMAGE_URI
+      - |
+        if [ "$SKIP_BUILD" = "true" ]; then
+          echo "⏭️ Skipping Docker build"
+        else
+          echo "🐳 Docker build started"
+          docker build -t $IMAGE_REPO_NAME .
+          docker tag $IMAGE_REPO_NAME:latest $IMAGE_URI
+        fi
+
   post_build:
     commands:
-      - echo Build completed on `date`
-      - docker push $IMAGE_URI
-      - printf '[{"name":"'$IMAGE_DEFINATION_NAME'","imageUri":"%s"}]' $IMAGE_URI > imagedefinitions.json
+      - |
+        if [ "$SKIP_BUILD" = "true" ]; then
+          echo "⏭️ Skipping Docker push"
+        else
+          docker push $IMAGE_URI
+          echo "💾 Storing last successful image tag"
+          aws ssm put-parameter \
+            --name "$LAST_IMAGE_PARAM" \
+            --value "$IMAGE_TAG" \
+            --type String \
+            --overwrite
+        fi
+
+      - printf '[{"name":"canary-container","imageUri":"%s"}]' $IMAGE_URI > imagedefinitions.json
 
 artifacts:
   files:
