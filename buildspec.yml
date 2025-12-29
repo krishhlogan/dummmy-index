@@ -15,7 +15,7 @@ phases:
   pre_build:
     commands:
       - echo Reading commit message
-      - COMMIT_MSG=$(git log -1 --pretty=%B)
+      - COMMIT_MSG=$(echo "$CODEBUILD_SOURCE_VERSION" | cut -d':' -f2-)
       - echo "$COMMIT_MSG"
 
       - export DEPLOY_ACTION=NONE
